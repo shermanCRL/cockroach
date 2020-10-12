@@ -2450,6 +2450,42 @@ var CmpOps = cmpOpFixups(map[ComparisonOperator]cmpOpOverload{
 
 	Contains: {
 		&CmpOp{
+			LeftType:  types.String,
+			RightType: types.AnyArray,
+			Fn: func(ctx *EvalContext, left Datum, right Datum) (Datum, error) {
+				lf := MustBeDString(left)
+				haystack, err := lf.Tokenize()
+
+				needles := MustBeDArray(right)
+
+				if err != nil {
+					return nil, err
+				}
+
+				return ArrayContains(ctx, haystack, needles)
+			},
+			Volatility: VolatilityImmutable,
+		},
+		&CmpOp{
+			LeftType:  types.String,
+			RightType: types.String,
+			Fn: func(ctx *EvalContext, left Datum, right Datum) (Datum, error) {
+				lf := MustBeDString(left)
+				haystack, err := lf.Tokenize()
+
+				rt := MustBeDString(right)
+				needles := NewDArray(types.String)
+				needles.Append(&rt)
+
+				if err != nil {
+					return nil, err
+				}
+
+				return ArrayContains(ctx, haystack, needles)
+			},
+			Volatility: VolatilityImmutable,
+		},
+		&CmpOp{
 			LeftType:  types.AnyArray,
 			RightType: types.AnyArray,
 			Fn: func(ctx *EvalContext, left Datum, right Datum) (Datum, error) {

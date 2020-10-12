@@ -792,8 +792,19 @@ func EncodeInvertedIndexTableKeys(val tree.Datum, inKey []byte) (key [][]byte, e
 		return json.EncodeInvertedIndexKeys(inKey, val.(*tree.DJSON).JSON)
 	case types.ArrayFamily:
 		return encodeArrayInvertedIndexTableKeys(val.(*tree.DArray), inKey)
+	case types.StringFamily:
+		return encodeStringInvertedIndexTableKeys(val.(*tree.DString), inKey)
 	}
 	return nil, errors.AssertionFailedf("trying to apply inverted index to unsupported type %s", datum.ResolvedType())
+}
+
+func encodeStringInvertedIndexTableKeys(val *tree.DString, inKey []byte) (key [][]byte, err error) {
+	tokens, err := val.Tokenize()
+	if err != nil {
+		return nil, err
+	}
+
+	return encodeArrayInvertedIndexTableKeys(tokens, inKey)
 }
 
 // encodeArrayInvertedIndexTableKeys returns a list of inverted index keys for

@@ -355,6 +355,8 @@
 </thead><tbody>
 <tr><td>anyelement <code>@></code> anyelement</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>jsonb <code>@></code> jsonb</td><td><a href="bool.html">bool</a></td></tr>
+<tr><td><a href="string.html">string</a> <code>@></code> anyelement</td><td><a href="bool.html">bool</a></td></tr>
+<tr><td><a href="string.html">string</a> <code>@></code> <a href="string.html">string</a></td><td><a href="bool.html">bool</a></td></tr>
 </tbody></table>
 <table><thead>
 <tr><td><code>ILIKE</code></td><td>Return</td></tr>

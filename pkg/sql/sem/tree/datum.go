@@ -24,6 +24,7 @@ import (
 	"unicode"
 	"unsafe"
 
+	"github.com/clipperhouse/uax29/words"
 	"github.com/cockroachdb/apd/v2"
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -1125,6 +1126,27 @@ func MustBeDString(e Expr) DString {
 		panic(errors.AssertionFailedf("expected *DString, found %T", e))
 	}
 	return i
+}
+
+func (d *DString) Tokenize() (*DArray, error) {
+	s := string(*d)
+	r := strings.NewReader(s)
+	sc := words.NewScanner(r)
+
+	tokens := NewDArray(types.String)
+
+	for sc.Scan() {
+		var token Datum = NewDString(sc.Text())
+		if err := tokens.Append(token); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+
+	return tokens, nil
 }
 
 // ResolvedType implements the TypedExpr interface.

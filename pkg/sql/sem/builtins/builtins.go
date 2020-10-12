@@ -4105,8 +4105,30 @@ may increase either contention or retry errors, or both.`,
 			},
 			Info:       "This function is used only by CockroachDB's developers for testing purposes.",
 			Volatility: tree.VolatilityStable,
-		}),
-
+		},
+		tree.Overload{
+			Types:      tree.ArgTypes{{"val", types.String}},
+			ReturnType: tree.FixedReturnType(types.Int),
+			Fn: func(ctx *tree.EvalContext, args tree.Datums) (tree.Datum, error) {
+				arg := args[0]
+				if arg == tree.DNull {
+					return tree.DZero, nil
+				}
+				s := tree.MustBeDString(arg)
+				arr, err := s.Tokenize()
+				if err != nil {
+					return nil, err
+				}
+				keys, err := rowenc.EncodeInvertedIndexTableKeys(arr, nil)
+				if err != nil {
+					return nil, err
+				}
+				return tree.NewDInt(tree.DInt(len(keys))), nil
+			},
+			Info:       "This function is used only by CockroachDB's developers for testing purposes.",
+			Volatility: tree.VolatilityStable,
+		},
+	),
 	// Returns true iff the current user has admin role.
 	// Note: it would be a privacy leak to extend this to check arbitrary usernames.
 	"crdb_internal.is_admin": makeBuiltin(

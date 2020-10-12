@@ -1049,6 +1049,12 @@ func (c *indexConstraintCtx) makeInvertedIndexSpansForExpr(
 			return c.makeInvertedIndexSpansForJSONContainmentExpr(rightDatum.(*tree.DJSON), constraints, allPaths)
 		case types.ArrayFamily:
 			return c.makeInvertedIndexSpansForArrayContainmentExpr(rightDatum.(*tree.DArray), constraints, allPaths)
+		case types.StringFamily:
+			// treat string as a single-element array
+			tokens := tree.NewDArray(types.String)
+			tokens.Append(rightDatum)
+
+			return c.makeInvertedIndexSpansForArrayContainmentExpr(tokens, constraints, allPaths)
 
 		default:
 			log.Errorf(context.TODO(), "unexpected type in inverted index: %s", rightDatum.ResolvedType())

@@ -113,9 +113,18 @@ func ValidateColumnDefType(t *types.T) error {
 
 // ColumnTypeIsIndexable returns whether the type t is valid as an indexed column.
 func ColumnTypeIsIndexable(t *types.T) bool {
-	// Some inverted index types also have a key encoding, but we don't
-	// want to support those yet. See #50659.
-	return !MustBeValueEncoded(t) && !ColumnTypeIsInvertedIndexable(t)
+	if MustBeValueEncoded(t) {
+		return false
+	}
+
+	switch t.Family() {
+	case types.JsonFamily, types.ArrayFamily, types.GeographyFamily, types.GeometryFamily:
+		// Some inverted index types also have a key encoding, but we don't
+		// want to support those yet. See https://github.com/cockroachdb/cockroach/issues/50659
+		return false
+	}
+
+	return true
 }
 
 // ColumnTypeIsInvertedIndexable returns whether the type t is valid to be indexed
@@ -123,7 +132,8 @@ func ColumnTypeIsIndexable(t *types.T) bool {
 func ColumnTypeIsInvertedIndexable(t *types.T) bool {
 	family := t.Family()
 	return family == types.JsonFamily || family == types.ArrayFamily ||
-		family == types.GeographyFamily || family == types.GeometryFamily
+		family == types.GeographyFamily || family == types.GeometryFamily ||
+		family == types.StringFamily
 }
 
 // MustBeValueEncoded returns true if columns of the given kind can only be value

@@ -2891,6 +2891,14 @@ func countPaths(conjunct *FiltersItem) int {
 		return rd.Len()
 	}
 
+	if rd, ok := rightDatum.(*tree.DString); ok {
+		tokens, err := rd.Tokenize()
+		if err != nil {
+			return 0
+		}
+		return tokens.Len()
+	}
+
 	return 0
 }
 

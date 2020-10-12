@@ -30,6 +30,7 @@ require (
 	github.com/biogo/store v0.0.0-20160505134755-913427a1d5e8
 	github.com/cenkalti/backoff v2.1.1+incompatible
 	github.com/client9/misspell v0.3.4
+	github.com/clipperhouse/uax29 v1.6.8
 	github.com/cockroachdb/apd/v2 v2.0.2
 	github.com/cockroachdb/circuitbreaker v2.2.2-0.20190114160014-a614b14ccf63+incompatible
 	github.com/cockroachdb/cmux v0.0.0-20170110192607-30d10be49292
