@@ -13,6 +13,7 @@ package kvserver
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -1692,7 +1693,7 @@ func (r *Replica) GetExternalStorage(
 
 // GetExternalStorageFromURI returns an ExternalStorage object, based on the given URI.
 func (r *Replica) GetExternalStorageFromURI(
-	ctx context.Context, uri string, user string,
+	ctx context.Context, uri *url.URL, user string,
 ) (cloud.ExternalStorage, error) {
 	return r.store.cfg.ExternalStorageFromURI(ctx, uri, user)
 }

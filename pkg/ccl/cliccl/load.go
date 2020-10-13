@@ -11,6 +11,7 @@ package cliccl
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -61,16 +62,22 @@ func runLoadShow(cmd *cobra.Command, args []string) error {
 		basepath = cloudimpl.MakeLocalStorageURI(basepath)
 	}
 
-	externalStorageFromURI := func(ctx context.Context, uri string,
+	externalStorageFromURI := func(ctx context.Context, uri *url.URL,
 		user string) (cloud.ExternalStorage, error) {
 		return cloudimpl.ExternalStorageFromURI(ctx, uri, base.ExternalIODirConfig{},
 			cluster.NoSettings, blobs.TestEmptyBlobClientFactory, user, nil, nil)
 	}
+
+	basepathURI, err := url.Parse(basepath)
+	if err != nil {
+		return err
+	}
+
 	// This reads the raw backup descriptor (with table descriptors possibly not
 	// upgraded from the old FK representation, or even older formats). If more
 	// fields are added to the output, the table descriptors may need to be
 	// upgraded.
-	desc, err := backupccl.ReadBackupManifestFromURI(ctx, basepath, security.RootUser,
+	desc, err := backupccl.ReadBackupManifestFromURI(ctx, basepathURI, security.RootUser,
 		externalStorageFromURI, nil)
 	if err != nil {
 		return err

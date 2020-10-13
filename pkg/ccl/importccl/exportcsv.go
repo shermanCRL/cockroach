@@ -13,6 +13,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
@@ -234,7 +235,11 @@ func (sp *csvWriter) Run(ctx context.Context) {
 				return errors.Wrap(err, "failed to flush csv writer")
 			}
 
-			conf, err := cloudimpl.ExternalStorageConfFromURI(sp.spec.Destination, sp.spec.User)
+			specDestinationURI, err := url.Parse(sp.spec.Destination)
+			if err != nil {
+				return err
+			}
+			conf, err := cloudimpl.ExternalStorageConfFromURI(specDestinationURI, sp.spec.User)
 			if err != nil {
 				return err
 			}

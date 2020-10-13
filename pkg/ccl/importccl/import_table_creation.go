@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
+	"net/url"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -42,7 +43,7 @@ const (
 
 func readCreateTableFromStore(
 	ctx context.Context,
-	filename string,
+	filename *url.URL,
 	externalStorageFromURI cloud.ExternalStorageFromURIFactory,
 	user string,
 ) (*tree.CreateTable, error) {

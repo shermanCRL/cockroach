@@ -11,6 +11,7 @@ package backupccl
 import (
 	"bytes"
 	"context"
+	"net/url"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
@@ -54,7 +55,12 @@ func distRestore(
 	evalCtx := phs.ExtendedEvalContext()
 
 	if encryption != nil && encryption.Mode == jobspb.EncryptionMode_KMS {
-		kms, err := cloud.KMSFromURI(encryption.KMSInfo.Uri, &backupKMSEnv{
+		kmsInfoURI, err := url.Parse(encryption.KMSInfo.Uri)
+		if err != nil {
+			return err
+		}
+
+		kms, err := cloud.KMSFromURI(kmsInfoURI, &backupKMSEnv{
 			settings: phs.ExecCfg().Settings,
 			conf:     &phs.ExecCfg().ExternalIODirConfig,
 		})

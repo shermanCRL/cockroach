@@ -1912,7 +1912,8 @@ b STRING) CSV DATA (%s)`, testFiles.files[0])); err != nil {
 
 	// Test userfile import CSV.
 	t.Run("userfile-simple", func(t *testing.T) {
-		userfileURI := "userfile://defaultdb.public.root/test.csv"
+		userfileURI, err := url.Parse("userfile://defaultdb.public.root/test.csv")
+		require.NoError(t, err)
 		userfileStorage, err := tc.Server(0).ExecutorConfig().(sql.ExecutorConfig).DistSQLSrv.
 			ExternalStorageFromURI(ctx, userfileURI, security.RootUser)
 		require.NoError(t, err)
@@ -1928,7 +1929,8 @@ b STRING) CSV DATA (%s)`, testFiles.files[0])); err != nil {
 	})
 
 	t.Run("userfile-relative-file-path", func(t *testing.T) {
-		userfileURI := "userfile:///import-test/employees.csv"
+		userfileURI, err := url.Parse("userfile:///import-test/employees.csv")
+		require.NoError(t, err)
 		userfileStorage, err := tc.Server(0).ExecutorConfig().(sql.ExecutorConfig).DistSQLSrv.
 			ExternalStorageFromURI(ctx, userfileURI, security.RootUser)
 		require.NoError(t, err)
@@ -2002,11 +2004,13 @@ func TestImportObjectLevelRBAC(t *testing.T) {
 	qualifiedTableName := "defaultdb.public.user_file_table_test"
 	filename := "path/to/file"
 	dest := cloudimpl.MakeUserFileStorageURI(qualifiedTableName, filename)
+	destURI, err := url.Parse(dest)
+	require.NoError(t, err)
 
 	writeToUserfile := func(filename string) {
 		// Write to userfile storage now that testuser has CREATE privileges.
 		ie := tc.Server(0).InternalExecutor().(*sql.InternalExecutor)
-		fileTableSystem1, err := cloudimpl.ExternalStorageFromURI(ctx, dest, base.ExternalIODirConfig{},
+		fileTableSystem1, err := cloudimpl.ExternalStorageFromURI(ctx, destURI, base.ExternalIODirConfig{},
 			cluster.NoSettings, blobs.TestEmptyBlobClientFactory, "testuser", ie, tc.Server(0).DB())
 		require.NoError(t, err)
 		require.NoError(t, fileTableSystem1.WriteFile(ctx, filename, bytes.NewReader([]byte("1,aaa"))))
@@ -2164,8 +2168,9 @@ func TestURIRequiresAdminRole(t *testing.T) {
 		})
 
 		t.Run(tc.name+"-direct", func(t *testing.T) {
-			requires, scheme, err := cloudimpl.AccessIsWithExplicitAuth(tc.uri)
+			tcuri, err := url.Parse(tc.uri)
 			require.NoError(t, err)
+			requires, scheme := cloudimpl.AccessIsWithExplicitAuth(tcuri)
 			require.Equal(t, requires, !tc.requiresAdmin)
 
 			url, err := url.Parse(tc.uri)
@@ -3032,7 +3037,8 @@ func TestImportIntoCSV(t *testing.T) {
 
 	// Test userfile IMPORT INTO CSV.
 	t.Run("import-into-userfile-simple", func(t *testing.T) {
-		userfileURI := "userfile://defaultdb.public.root/test.csv"
+		userfileURI, err := url.Parse("userfile://defaultdb.public.root/test.csv")
+		require.NoError(t, err)
 		userfileStorage, err := tc.Server(0).ExecutorConfig().(sql.ExecutorConfig).DistSQLSrv.
 			ExternalStorageFromURI(ctx, userfileURI, security.RootUser)
 		require.NoError(t, err)
@@ -3100,8 +3106,10 @@ func benchUserUpload(b *testing.B, uploadBaseURI string) {
 		require.NoError(b, err)
 	} else if uri.Scheme == "userfile" {
 		// Write the test data to userfile storage.
+		testFileBaseURI, err := url.Parse(uploadBaseURI + testFileBase)
+		require.NoError(b, err)
 		userfileStorage, err := tc.Server(0).ExecutorConfig().(sql.ExecutorConfig).DistSQLSrv.
-			ExternalStorageFromURI(ctx, uploadBaseURI+testFileBase, security.RootUser)
+			ExternalStorageFromURI(ctx, testFileBaseURI, security.RootUser)
 		require.NoError(b, err)
 		content, err := ioutil.ReadAll(r)
 		require.NoError(b, err)

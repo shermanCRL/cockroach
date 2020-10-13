@@ -101,7 +101,7 @@ func (r BackupFileDescriptors) Less(i, j int) bool {
 // export storage.
 func ReadBackupManifestFromURI(
 	ctx context.Context,
-	uri string,
+	uri *url.URL,
 	user string,
 	makeExternalStorageFromURI cloud.ExternalStorageFromURIFactory,
 	encryption *jobspb.BackupEncryptionOptions,
@@ -416,7 +416,12 @@ func getEncryptionKey(
 		return encryption.Key, nil
 	case jobspb.EncryptionMode_KMS:
 		// Contact the selected KMS to derive the decrypted data key.
-		kms, err := cloud.KMSFromURI(encryption.KMSInfo.Uri, &backupKMSEnv{
+		kmsURI, err := url.Parse(encryption.KMSInfo.Uri)
+		if err != nil {
+			return nil, err
+		}
+
+		kms, err := cloud.KMSFromURI(kmsURI, &backupKMSEnv{
 			settings: settings,
 			conf:     &ioConf,
 		})
@@ -502,7 +507,7 @@ func writeTableStatistics(
 
 func loadBackupManifests(
 	ctx context.Context,
-	uris []string,
+	uris []*url.URL,
 	user string,
 	makeExternalStorageFromURI cloud.ExternalStorageFromURIFactory,
 	encryption *jobspb.BackupEncryptionOptions,
@@ -529,7 +534,7 @@ func loadBackupManifests(
 func getLocalityInfo(
 	ctx context.Context,
 	stores []cloud.ExternalStorage,
-	uris []string,
+	uris []*url.URL,
 	mainBackupManifest BackupManifest,
 	encryption *jobspb.BackupEncryptionOptions,
 	prefix string,
@@ -537,7 +542,7 @@ func getLocalityInfo(
 	var info jobspb.RestoreDetails_BackupLocalityInfo
 	// Now get the list of expected partial per-store backup manifest filenames
 	// and attempt to find them.
-	urisByOrigLocality := make(map[string]string)
+	urisByOrigLocality := make(urlMap)
 	for _, filename := range mainBackupManifest.PartitionDescriptorFilenames {
 		if prefix != "" {
 			filename = path.Join(prefix, filename)
@@ -569,7 +574,7 @@ func getLocalityInfo(
 			return info, errors.Errorf("expected manifest %s not found in backup locations", filename)
 		}
 	}
-	info.URIsByOriginalLocalityKV = urisByOrigLocality
+	info.URIsByOriginalLocalityKV = urisByOrigLocality.Strings()
 	return info, nil
 }
 
@@ -626,12 +631,12 @@ func resolveBackupManifests(
 	ctx context.Context,
 	baseStores []cloud.ExternalStorage,
 	mkStore cloud.ExternalStorageFromURIFactory,
-	from [][]string,
+	from [][]*url.URL,
 	endTime hlc.Timestamp,
 	encryption *jobspb.BackupEncryptionOptions,
 	user string,
 ) (
-	defaultURIs []string,
+	defaultURIs []*url.URL,
 	mainBackupManifests []BackupManifest,
 	localityInfo []jobspb.RestoreDetails_BackupLocalityInfo,
 	_ error,
@@ -644,7 +649,7 @@ func resolveBackupManifests(
 	// If explicit incremental backups were are passed, we simply load them one
 	// by one as specified and return the results.
 	if len(from) > 1 {
-		defaultURIs = make([]string, len(from))
+		defaultURIs = make([]*url.URL, len(from))
 		localityInfo = make([]jobspb.RestoreDetails_BackupLocalityInfo, len(from))
 		mainBackupManifests = make([]BackupManifest, len(from))
 
@@ -694,7 +699,7 @@ func resolveBackupManifests(
 
 		numLayers := len(prev) + 1
 
-		defaultURIs = make([]string, numLayers)
+		defaultURIs = make([]*url.URL, numLayers)
 		mainBackupManifests = make([]BackupManifest, numLayers)
 		localityInfo = make([]jobspb.RestoreDetails_BackupLocalityInfo, numLayers)
 
@@ -715,10 +720,7 @@ func resolveBackupManifests(
 			// each layer in that partition below.
 			baseURIs := make([]*url.URL, numPartitions)
 			for i := range from[0] {
-				baseURIs[i], err = url.Parse(from[0][i])
-				if err != nil {
-					return nil, nil, nil, err
-				}
+				baseURIs[i] = from[0][i]
 			}
 
 			// For each layer, we need to load the base manifest then calculate the URI and the
@@ -734,11 +736,11 @@ func resolveBackupManifests(
 				// dirname piece of that path is the subdirectory in each of the
 				// partitions in which we'll also expect to find a partition manifest.
 				subDir := path.Dir(prev[i])
-				partitionURIs := make([]string, numPartitions)
+				partitionURIs := make([]*url.URL, numPartitions)
 				for j := range baseURIs {
 					u := *baseURIs[j] // NB: makes a copy to avoid mutating the baseURI.
 					u.Path = path.Join(u.Path, subDir)
-					partitionURIs[j] = u.String()
+					partitionURIs[j] = &u
 				}
 				defaultURIs[i+1] = partitionURIs[0]
 				localityInfo[i+1], err = getLocalityInfo(ctx, baseStores, partitionURIs, defaultManifestForLayer, encryption, subDir)
@@ -977,11 +979,8 @@ func createCheckpointIfNotExists(
 
 // RedactURIForErrorMessage redacts any storage secrets before returning a URI which is safe to
 // return to the client in an error message.
-func RedactURIForErrorMessage(uri string) string {
-	redactedURI, err := cloudimpl.SanitizeExternalStorageURI(uri, []string{})
-	if err != nil {
-		return "<uri_failed_to_redact>"
-	}
+func RedactURIForErrorMessage(uri *url.URL) *url.URL {
+	redactedURI := cloudimpl.SanitizeExternalStorageURI(uri, []string{})
 	return redactedURI
 }
 
@@ -990,7 +989,7 @@ func RedactURIForErrorMessage(uri string) string {
 // on that location. Note that the checkpoint file should be written as soon as
 // the job actually starts.
 func checkForPreviousBackup(
-	ctx context.Context, exportStore cloud.ExternalStorage, defaultURI string,
+	ctx context.Context, exportStore cloud.ExternalStorage, defaultURI *url.URL,
 ) error {
 	redactedURI := RedactURIForErrorMessage(defaultURI)
 	r, err := exportStore.ReadFile(ctx, backupManifestName)
@@ -1032,7 +1031,7 @@ func verifyWriteableDestination(
 	ctx context.Context,
 	user string,
 	makeCloudStorage cloud.ExternalStorageFromURIFactory,
-	baseURI string,
+	baseURI *url.URL,
 ) error {
 	baseStore, err := makeCloudStorage(ctx, baseURI, user)
 	if err != nil {

@@ -209,21 +209,40 @@ func spansForAllTableIndexes(
 	return spans
 }
 
-func getLocalityAndBaseURI(uri, appendPath string) (string, string, error) {
-	parsedURI, err := url.Parse(uri)
-	if err != nil {
-		return "", "", err
-	}
-	q := parsedURI.Query()
+func cloneURL(uri *url.URL) *url.URL {
+	// Same technique as https://github.com/golang/go/pull/35578/files
+	clone := &*uri
+	clone.User = &*uri.User
+
+	return clone
+}
+
+func getLocalityAndBaseURI(uri *url.URL, appendPath string) (string, *url.URL) {
+	// Make a copy, same technique as https://github.com/golang/go/pull/35578/files
+	baseURI := cloneURL(uri)
+
+	q := baseURI.Query()
 	localityKV := q.Get(localityURLParam)
+
 	// Remove the backup locality parameter.
 	q.Del(localityURLParam)
-	parsedURI.RawQuery = q.Encode()
+	baseURI.RawQuery = q.Encode()
 	if appendPath != "" {
-		parsedURI.Path = parsedURI.Path + appendPath
+		baseURI.Path = baseURI.Path + appendPath
 	}
-	baseURI := parsedURI.String()
-	return localityKV, baseURI, nil
+
+	return localityKV, baseURI
+}
+
+type urlMap map[string]*url.URL
+
+func (m urlMap) Strings() map[string]string {
+	result := make(map[string]string)
+	for k, v := range m {
+		result[k] = v.String()
+	}
+
+	return result
 }
 
 // getURIsByLocalityKV takes a slice of URIs for a single (possibly partitioned)
@@ -231,56 +250,53 @@ func getLocalityAndBaseURI(uri, appendPath string) (string, string, error) {
 // URIs by locality KV, appending appendPath to the path component of both the
 // default URI and all the locality URIs. The URIs in the result do not include
 // the COCKROACH_LOCALITY parameter.
-func getURIsByLocalityKV(to []string, appendPath string) (string, map[string]string, error) {
-	urisByLocalityKV := make(map[string]string)
+func getURIsByLocalityKV(to []*url.URL, appendPath string) (*url.URL, urlMap, error) {
+	urisByLocalityKV := make(map[string]*url.URL)
 	if len(to) == 1 {
-		localityKV, baseURI, err := getLocalityAndBaseURI(to[0], appendPath)
-		if err != nil {
-			return "", nil, err
-		}
+		localityKV, baseURI := getLocalityAndBaseURI(to[0], appendPath)
+
 		if localityKV != "" && localityKV != defaultLocalityValue {
-			return "", nil, errors.Errorf("%s %s is invalid for a single BACKUP location",
+			return nil, nil, errors.Errorf("%s %s is invalid for a single BACKUP location",
 				localityURLParam, localityKV)
 		}
 		return baseURI, urisByLocalityKV, nil
 	}
 
-	var defaultURI string
+	var defaultURI *url.URL
 	for _, uri := range to {
-		localityKV, baseURI, err := getLocalityAndBaseURI(uri, appendPath)
-		if err != nil {
-			return "", nil, err
-		}
+		localityKV, baseURI := getLocalityAndBaseURI(uri, appendPath)
+
 		if localityKV == "" {
-			return "", nil, errors.Errorf(
+			return nil, nil, errors.Errorf(
 				"multiple URLs are provided for partitioned BACKUP, but %s is not specified",
 				localityURLParam,
 			)
 		}
+
 		if localityKV == defaultLocalityValue {
-			if defaultURI != "" {
-				return "", nil, errors.Errorf("multiple default URLs provided for partition backup")
+			if defaultURI != nil {
+				return nil, nil, errors.Errorf("multiple default URLs provided for partition backup")
 			}
 			defaultURI = baseURI
 		} else {
 			kv := roachpb.Tier{}
 			if err := kv.FromString(localityKV); err != nil {
-				return "", nil, errors.Wrap(err, "failed to parse backup locality")
+				return nil, nil, errors.Wrap(err, "failed to parse backup locality")
 			}
 			if _, ok := urisByLocalityKV[localityKV]; ok {
-				return "", nil, errors.Errorf("duplicate URIs for locality %s", localityKV)
+				return nil, nil, errors.Errorf("duplicate URIs for locality %s", localityKV)
 			}
 			urisByLocalityKV[localityKV] = baseURI
 		}
 	}
-	if defaultURI == "" {
-		return "", nil, errors.Errorf("no default URL provided for partitioned backup")
+	if defaultURI == nil {
+		return nil, nil, errors.Errorf("no default URL provided for partitioned backup")
 	}
 	return defaultURI, urisByLocalityKV, nil
 }
 
 func resolveOptionsForBackupJobDescription(
-	opts tree.BackupOptions, kmsURIs []string,
+	opts tree.BackupOptions, kmsURIs []*url.URL,
 ) (tree.BackupOptions, error) {
 	if opts.IsDefault() {
 		return opts, nil
@@ -296,11 +312,8 @@ func resolveOptionsForBackupJobDescription(
 	}
 
 	for _, uri := range kmsURIs {
-		redactedURI, err := cloudimpl.RedactKMSURI(uri)
-		if err != nil {
-			return tree.BackupOptions{}, err
-		}
-		newOpts.EncryptionKMSURI = append(newOpts.EncryptionKMSURI, tree.NewDString(redactedURI))
+		redactedURI := cloudimpl.RedactKMSURI(uri)
+		newOpts.EncryptionKMSURI = append(newOpts.EncryptionKMSURI, tree.NewDString(redactedURI.String()))
 	}
 
 	return newOpts, nil
@@ -309,9 +322,9 @@ func resolveOptionsForBackupJobDescription(
 func backupJobDescription(
 	p sql.PlanHookState,
 	backup *tree.Backup,
-	to []string,
-	incrementalFrom []string,
-	kmsURIs []string,
+	to []*url.URL,
+	incrementalFrom []*url.URL,
+	kmsURIs []*url.URL,
 	resolvedSubdir string,
 ) (string, error) {
 	b := &tree.Backup{
@@ -333,19 +346,13 @@ func backupJobDescription(
 	}
 
 	for _, t := range to {
-		sanitizedTo, err := cloudimpl.SanitizeExternalStorageURI(t, nil /* extraParams */)
-		if err != nil {
-			return "", err
-		}
-		b.To = append(b.To, tree.NewDString(sanitizedTo))
+		sanitizedTo := cloudimpl.SanitizeExternalStorageURI(t, nil /* extraParams */)
+		b.To = append(b.To, tree.NewDString(sanitizedTo.String()))
 	}
 
 	for _, from := range incrementalFrom {
-		sanitizedFrom, err := cloudimpl.SanitizeExternalStorageURI(from, nil /* extraParams */)
-		if err != nil {
-			return "", err
-		}
-		b.IncrementalFrom = append(b.IncrementalFrom, tree.NewDString(sanitizedFrom))
+		sanitizedFrom := cloudimpl.SanitizeExternalStorageURI(from, nil /* extraParams */)
+		b.IncrementalFrom = append(b.IncrementalFrom, tree.NewDString(sanitizedFrom.String()))
 	}
 
 	resolvedOpts, err := resolveOptionsForBackupJobDescription(backup.Options, kmsURIs)
@@ -368,7 +375,7 @@ func backupJobDescription(
 // encryption/decryption operations during this BACKUP. By default it is the
 // first KMS URI passed during the incremental BACKUP.
 func validateKMSURIsAgainstFullBackup(
-	kmsURIs []string, kmsMasterKeyIDToDataKey *encryptedDataKeyMap, kmsEnv cloud.KMSEnv,
+	kmsURIs []*url.URL, kmsMasterKeyIDToDataKey *encryptedDataKeyMap, kmsEnv cloud.KMSEnv,
 ) (*jobspb.BackupEncryptionOptions_KMSInfo, error) {
 	var defaultKMSInfo *jobspb.BackupEncryptionOptions_KMSInfo
 	for _, kmsURI := range kmsURIs {
@@ -397,7 +404,7 @@ func validateKMSURIsAgainstFullBackup(
 
 		if defaultKMSInfo == nil {
 			defaultKMSInfo = &jobspb.BackupEncryptionOptions_KMSInfo{
-				Uri:              kmsURI,
+				Uri:              kmsURI.String(),
 				EncryptedDataKey: encryptedDataKey,
 			}
 		}
@@ -413,11 +420,22 @@ type annotatedBackupStatement struct {
 	*jobs.CreatedByInfo
 }
 
+type urlSlice []*url.URL
+
+func (us urlSlice) Strings() []string {
+	var result []string
+	for _, u := range us {
+		result = append(result, u.String())
+	}
+
+	return result
+}
+
 // backupEncryptionParams is a structured representation of the encryption
 // options that the user provided in the backup statement.
 type backupEncryptionParams struct {
 	encryptMode          encryptionMode
-	kmsURIs              []string
+	kmsURIs              urlSlice
 	encryptionPassphrase []byte
 
 	kmsEnv *backupKMSEnv
@@ -491,6 +509,26 @@ func checkPrivilegesForBackup(
 	}
 
 	return nil
+func stringsToURLs(ss []string) ([]*url.URL, error) {
+	var urls []*url.URL
+	for _, s := range ss {
+		u, err := url.Parse(s)
+		if err != nil {
+			return urls, err
+		}
+		urls = append(urls, u)
+	}
+
+	return urls, nil
+}
+
+func urlsToStrings(us []*url.URL) []string {
+	var ss []string
+	for _, u := range us {
+		ss = append(ss, u.String())
+	}
+
+	return ss
 }
 
 // backupPlanHook implements PlanHookFn.
@@ -533,7 +571,7 @@ func backupPlanHook(
 		encryptionParams.encryptMode = passphrase
 	}
 
-	var kmsFn func() ([]string, *backupKMSEnv, error)
+	var kmsFn func() ([]*url.URL, *backupKMSEnv, error)
 	if backupStmt.Options.EncryptionKMSURI != nil {
 		if encryptionParams.encryptMode != noEncryption {
 			return nil, nil, nil, false,
@@ -544,15 +582,21 @@ func backupPlanHook(
 		if err != nil {
 			return nil, nil, nil, false, err
 		}
-		kmsFn = func() ([]string, *backupKMSEnv, error) {
+		kmsFn = func() ([]*url.URL, *backupKMSEnv, error) {
 			res, err := fn()
-			if err == nil {
-				return res, &backupKMSEnv{
-					settings: p.ExecCfg().Settings,
-					conf:     &p.ExecCfg().ExternalIODirConfig,
-				}, nil
+			if err != nil {
+				return nil, nil, err
 			}
-			return nil, nil, err
+
+			resURIs, err := stringsToURLs(res)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			return resURIs, &backupKMSEnv{
+				settings: p.ExecCfg().Settings,
+				conf:     &p.ExecCfg().ExternalIODirConfig,
+			}, nil
 		}
 		encryptionParams.encryptMode = kms
 	}
@@ -596,7 +640,17 @@ func backupPlanHook(
 			}
 		}
 
+		toURIs, err := stringsToURLs(to)
+		if err != nil {
+			return err
+		}
+
 		incrementalFrom, err := incrementalFromFn()
+		if err != nil {
+			return err
+		}
+
+		incrementalFromURIs, err := stringsToURLs(incrementalFrom)
 		if err != nil {
 			return err
 		}
@@ -671,7 +725,7 @@ func backupPlanHook(
 			}
 		}
 
-		defaultURI, urisByLocalityKV, err := getURIsByLocalityKV(to, "")
+		defaultURI, urisByLocalityKV, err := getURIsByLocalityKV(toURIs, "")
 		if err != nil {
 			return err
 		}
@@ -680,7 +734,7 @@ func backupPlanHook(
 		// backupDestination struct.
 		collectionURI, defaultURI, resolvedSubdir, urisByLocalityKV, prevs, err :=
 			resolveDest(ctx, p.User(), backupStmt.Nested, backupStmt.AppendToLatest, defaultURI,
-				urisByLocalityKV, makeCloudStorage, endTime, to, incrementalFrom, subdir)
+				urisByLocalityKV, makeCloudStorage, endTime, toURIs, incrementalFromURIs, subdir)
 		if err != nil {
 			return err
 		}
@@ -895,7 +949,7 @@ func backupPlanHook(
 			return err
 		}
 
-		description, err := backupJobDescription(p, backupStmt.Backup, to, incrementalFrom, encryptionParams.kmsURIs, resolvedSubdir)
+		description, err := backupJobDescription(p, backupStmt.Backup, toURIs, incrementalFromURIs, encryptionParams.kmsURIs, resolvedSubdir)
 		if err != nil {
 			return err
 		}
@@ -922,7 +976,7 @@ func backupPlanHook(
 		// TODO (pbardea): For partitioned backups, also add verification for other
 		// stores we are writing to in addition to the default.
 		baseURI := collectionURI
-		if baseURI == "" {
+		if baseURI == nil {
 			baseURI = defaultURI
 		}
 		if err := verifyWriteableDestination(ctx, p.User(), makeCloudStorage, baseURI); err != nil {
@@ -932,12 +986,12 @@ func backupPlanHook(
 		backupDetails := jobspb.BackupDetails{
 			StartTime:         startTime,
 			EndTime:           endTime,
-			URI:               defaultURI,
-			URIsByLocalityKV:  urisByLocalityKV,
+			URI:               defaultURI.String(),
+			URIsByLocalityKV:  urisByLocalityKV.Strings(),
 			BackupManifest:    descBytes,
 			EncryptionOptions: encryptionOptions,
 			EncryptionInfo:    encryptionInfo,
-			CollectionURI:     collectionURI,
+			CollectionURI:     collectionURI.String(),
 		}
 		if len(spans) > 0 {
 			protectedtsID := uuid.MakeV4()
@@ -1143,7 +1197,7 @@ func protectTimestampForBackup(
 }
 
 func getEncryptedDataKeyFromURI(
-	ctx context.Context, plaintextDataKey []byte, kmsURI string, kmsEnv cloud.KMSEnv,
+	ctx context.Context, plaintextDataKey []byte, kmsURI *url.URL, kmsEnv cloud.KMSEnv,
 ) (string, []byte, error) {
 	kms, err := cloud.KMSFromURI(kmsURI, kmsEnv)
 	if err != nil {
@@ -1154,20 +1208,16 @@ func getEncryptedDataKeyFromURI(
 		_ = kms.Close()
 	}()
 
-	kmsURL, err := url.ParseRequestURI(kmsURI)
-	if err != nil {
-		return "", nil, errors.Wrap(err, "cannot parse KMSURI")
-	}
 	encryptedDataKey, err := kms.Encrypt(ctx, plaintextDataKey)
 	if err != nil {
 		return "", nil, errors.Wrapf(err, "failed to encrypt data key for KMS scheme %s",
-			kmsURL.Scheme)
+			kmsURI.Scheme)
 	}
 
 	masterKeyID, err := kms.MasterKeyID()
 	if err != nil {
 		return "", nil, errors.Wrapf(err, "failed to get master key ID for KMS scheme %s",
-			kmsURL.Scheme)
+			kmsURI.Scheme)
 	}
 
 	return masterKeyID, encryptedDataKey, nil
@@ -1181,7 +1231,7 @@ func getEncryptedDataKeyFromURI(
 // encryption/decryption operations during this BACKUP. By default it is the
 // first KMS URI.
 func getEncryptedDataKeyByKMSMasterKeyID(
-	ctx context.Context, kmsURIs []string, plaintextDataKey []byte, kmsEnv cloud.KMSEnv,
+	ctx context.Context, kmsURIs []*url.URL, plaintextDataKey []byte, kmsEnv cloud.KMSEnv,
 ) (*encryptedDataKeyMap, *jobspb.BackupEncryptionOptions_KMSInfo, error) {
 	encryptedDataKeyByKMSMasterKeyID := newEncryptedDataKeyMap()
 	// The coordinator node contacts every KMS and records the encrypted data
@@ -1198,7 +1248,7 @@ func getEncryptedDataKeyByKMSMasterKeyID(
 		// encryption/decryption operation during a BACKUP.
 		if kmsInfo == nil {
 			kmsInfo = &jobspb.BackupEncryptionOptions_KMSInfo{
-				Uri:              kmsURI,
+				Uri:              kmsURI.String(),
 				EncryptedDataKey: encryptedDataKey,
 			}
 		}

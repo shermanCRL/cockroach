@@ -10,6 +10,7 @@ package backupccl
 
 import (
 	"context"
+	"net/url"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -141,12 +142,23 @@ func runBackupProcessor(
 
 	// For all backups, partitioned or not, the main BACKUP manifest is stored at
 	// details.URI.
-	defaultConf, err := cloudimpl.ExternalStorageConfFromURI(spec.DefaultURI, spec.User)
+
+	specDefaultURI, err := url.Parse(spec.DefaultURI)
+	if err != nil {
+		return err
+	}
+
+	defaultConf, err := cloudimpl.ExternalStorageConfFromURI(specDefaultURI, spec.User)
 	if err != nil {
 		return err
 	}
 	storageByLocalityKV := make(map[string]*roachpb.ExternalStorage)
-	for kv, uri := range spec.URIsByLocalityKV {
+	for kv, s := range spec.URIsByLocalityKV {
+		uri, err := url.Parse(s)
+		if err != nil {
+			return err
+		}
+
 		conf, err := cloudimpl.ExternalStorageConfFromURI(uri, spec.User)
 		if err != nil {
 			return err

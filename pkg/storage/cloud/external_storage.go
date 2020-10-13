@@ -14,6 +14,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"io"
+	"net/url"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -81,7 +82,7 @@ type ExternalStorage interface {
 type ExternalStorageFactory func(ctx context.Context, dest roachpb.ExternalStorage) (ExternalStorage, error)
 
 // ExternalStorageFromURIFactory describes a factory function for ExternalStorage given a URI.
-type ExternalStorageFromURIFactory func(ctx context.Context, uri string,
+type ExternalStorageFromURIFactory func(ctx context.Context, uri *url.URL,
 	user string) (ExternalStorage, error)
 
 // SQLConnI encapsulates the interfaces which will be implemented by the network

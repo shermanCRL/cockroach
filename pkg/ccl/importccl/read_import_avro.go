@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"unicode/utf8"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -471,7 +472,7 @@ func (a *avroInputReader) start(group ctxgroup.Group) {}
 
 func (a *avroInputReader) readFiles(
 	ctx context.Context,
-	dataFiles map[int32]string,
+	dataFiles map[int32]*url.URL,
 	resumePos map[int32]int64,
 	format roachpb.IOFileFormat,
 	makeExternalStorage cloud.ExternalStorageFactory,

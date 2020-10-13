@@ -10,6 +10,7 @@ package backupccl
 
 import (
 	"context"
+	"net/url"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -156,7 +157,12 @@ func makeBackupDataProcessorSpecs(
 	}
 
 	if encryption != nil && encryption.Mode == jobspb.EncryptionMode_KMS {
-		kms, err := cloud.KMSFromURI(encryption.KMSInfo.Uri, &backupKMSEnv{
+		kmsURI, err := url.Parse(encryption.KMSInfo.Uri)
+		if err != nil {
+			return nil, err
+		}
+
+		kms, err := cloud.KMSFromURI(kmsURI, &backupKMSEnv{
 			settings: execCfg.Settings,
 			conf:     &execCfg.ExternalIODirConfig,
 		})

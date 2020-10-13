@@ -11,6 +11,7 @@ package importccl
 import (
 	"context"
 	"math"
+	"net/url"
 	"sync/atomic"
 	"time"
 
@@ -151,7 +152,11 @@ func makeInputConverter(
 	case roachpb.IOFileFormat_CSV:
 		isWorkload := true
 		for _, file := range spec.Uri {
-			if conf, err := cloudimpl.ExternalStorageConfFromURI(file, spec.User); err != nil || conf.Provider != roachpb.ExternalStorageProvider_Workload {
+			fileURI, err := url.Parse(file)
+			if err != nil {
+				return nil, nil
+			}
+			if conf, err := cloudimpl.ExternalStorageConfFromURI(fileURI, spec.User); err != nil || conf.Provider != roachpb.ExternalStorageProvider_Workload {
 				isWorkload = false
 				break
 			}

@@ -299,7 +299,7 @@ var cloudStorageSinkIDAtomic int64
 
 func makeCloudStorageSink(
 	ctx context.Context,
-	baseURI string,
+	baseURI *url.URL,
 	nodeID roachpb.NodeID,
 	targetMaxFileSize int64,
 	settings *cluster.Settings,

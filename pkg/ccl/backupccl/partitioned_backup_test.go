@@ -95,7 +95,12 @@ func TestGetURIsByLocalityKV(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			defaultURI, urisByLocality, err := getURIsByLocalityKV(tc.input, "" /* appendPath */)
+			input, err := stringsToURLs(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			defaultURI, urisByLocality, err := getURIsByLocalityKV(input, "" /* appendPath */)
 			if tc.error != "" {
 				if !testutils.IsError(err, tc.error) {
 					t.Fatalf("expected error matching %q, got %q", tc.error, err)
@@ -104,13 +109,13 @@ func TestGetURIsByLocalityKV(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if defaultURI != tc.defaultURI {
+				if defaultURI.String() != tc.defaultURI {
 					t.Fatalf("expected default URI %s, got %s", tc.defaultURI, defaultURI)
 				}
 				for k, v := range urisByLocality {
 					if ev, ok := tc.urisByLocality[k]; !ok {
 						t.Fatalf("expected key %s not found", k)
-					} else if ev != v {
+					} else if ev != v.String() {
 						t.Fatalf("expected value %s for key %s, found %s", v, k, ev)
 					}
 				}

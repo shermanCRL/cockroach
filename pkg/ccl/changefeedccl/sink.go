@@ -188,7 +188,7 @@ func getSink(
 		q = url.Values{}
 		makeSink = func() (Sink, error) {
 			return makeCloudStorageSink(
-				ctx, u.String(), nodeID, fileSize, settings,
+				ctx, u, nodeID, fileSize, settings,
 				opts, timestampOracle, makeExternalStorageFromURI, user,
 			)
 		}

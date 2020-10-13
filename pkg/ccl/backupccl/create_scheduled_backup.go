@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -251,6 +252,11 @@ func doCreateBackupSchedules(
 		return errors.Wrapf(err, "failed to evaluate backup destination paths")
 	}
 
+	destinationURIs, err := stringsToURLs(destinations)
+	if err != nil {
+		return err
+	}
+
 	for _, dest := range destinations {
 		backupNode.To = append(backupNode.To, tree.NewDString(dest))
 	}
@@ -281,7 +287,7 @@ func doCreateBackupSchedules(
 
 	// Check if backups were already taken to this collection.
 	if _, ignoreExisting := scheduleOptions[optIgnoreExistingBackups]; !ignoreExisting {
-		if err := checkForExistingBackupsInCollection(ctx, p, destinations); err != nil {
+		if err := checkForExistingBackupsInCollection(ctx, p, destinationURIs); err != nil {
 			return err
 		}
 	}
@@ -377,7 +383,7 @@ func doCreateBackupSchedules(
 //
 // The user should be able to skip this check with a schedule options flag.
 func checkForExistingBackupsInCollection(
-	ctx context.Context, p sql.PlanHookState, destinations []string,
+	ctx context.Context, p sql.PlanHookState, destinations []*url.URL,
 ) error {
 	makeCloudFactory := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI
 	collectionURI, _, err := getURIsByLocalityKV(destinations, "")
@@ -659,11 +665,14 @@ func (m ScheduledBackupExecutionArgs) MarshalJSONPB(x *jsonpb.Marshaler) ([]byte
 		if !ok {
 			return nil, errors.Errorf("unexpected %T arg in backup schedule: %v", raw, raw)
 		}
-		clean, err := cloudimpl.SanitizeExternalStorageURI(raw.RawString(), nil /* extraParams */)
+
+		rawURI, err := url.Parse(raw.RawString())
 		if err != nil {
 			return nil, err
 		}
-		backup.To[i] = tree.NewDString(clean)
+
+		clean := cloudimpl.SanitizeExternalStorageURI(rawURI, nil /* extraParams */)
+		backup.To[i] = tree.NewDString(clean.String())
 	}
 
 	// NB: this will never be non-nil with current schedule syntax but is here for
@@ -673,11 +682,14 @@ func (m ScheduledBackupExecutionArgs) MarshalJSONPB(x *jsonpb.Marshaler) ([]byte
 		if !ok {
 			return nil, errors.Errorf("unexpected %T arg in backup schedule: %v", raw, raw)
 		}
-		clean, err := cloudimpl.SanitizeExternalStorageURI(raw.RawString(), nil /* extraParams */)
+
+		rawURI, err := url.Parse(raw.RawString())
 		if err != nil {
 			return nil, err
 		}
-		backup.IncrementalFrom[i] = tree.NewDString(clean)
+
+		clean := cloudimpl.SanitizeExternalStorageURI(rawURI, nil /* extraParams */)
+		backup.IncrementalFrom[i] = tree.NewDString(clean.String())
 	}
 
 	for i := range backup.Options.EncryptionKMSURI {
@@ -685,11 +697,14 @@ func (m ScheduledBackupExecutionArgs) MarshalJSONPB(x *jsonpb.Marshaler) ([]byte
 		if !ok {
 			return nil, errors.Errorf("unexpected %T arg in backup schedule: %v", raw, raw)
 		}
-		clean, err := cloudimpl.RedactKMSURI(raw.RawString())
+
+		rawURI, err := url.Parse(raw.RawString())
 		if err != nil {
 			return nil, err
 		}
-		backup.Options.EncryptionKMSURI[i] = tree.NewDString(clean)
+
+		clean := cloudimpl.RedactKMSURI(rawURI)
+		backup.Options.EncryptionKMSURI[i] = tree.NewDString(clean.String())
 	}
 
 	if backup.Options.EncryptionPassphrase != nil {

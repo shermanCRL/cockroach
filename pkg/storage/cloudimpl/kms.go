@@ -14,17 +14,10 @@ import "net/url"
 
 // RedactKMSURI redacts the Master Key ID and the ExternalStorage secret
 // credentials.
-func RedactKMSURI(kmsURI string) (string, error) {
-	sanitizedKMSURI, err := SanitizeExternalStorageURI(kmsURI, nil)
-	if err != nil {
-		return "", err
-	}
-
+func RedactKMSURI(kmsURI *url.URL) *url.URL {
+	sanitizedKMSURI := SanitizeExternalStorageURI(kmsURI, nil)
 	// Redact the path which contains the KMS Master Key identifier.
-	uri, err := url.ParseRequestURI(sanitizedKMSURI)
-	if err != nil {
-		return "", err
-	}
-	uri.Path = "/redacted"
-	return uri.String(), nil
+	sanitizedKMSURI.Path = "/redacted"
+
+	return sanitizedKMSURI
 }

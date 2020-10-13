@@ -1097,7 +1097,7 @@ func getUserDescriptorNames(
 }
 
 func resolveOptionsForRestoreJobDescription(
-	opts tree.RestoreOptions, intoDB string, kmsURIs []string,
+	opts tree.RestoreOptions, intoDB string, kmsURIs []*url.URL,
 ) (tree.RestoreOptions, error) {
 	if opts.IsDefault() {
 		return opts, nil
@@ -1120,11 +1120,8 @@ func resolveOptionsForRestoreJobDescription(
 	}
 
 	for _, uri := range kmsURIs {
-		redactedURI, err := cloudimpl.RedactKMSURI(uri)
-		if err != nil {
-			return tree.RestoreOptions{}, err
-		}
-		newOpts.DecryptionKMSURI = append(newOpts.DecryptionKMSURI, tree.NewDString(redactedURI))
+		redactedURI := cloudimpl.RedactKMSURI(uri)
+		newOpts.DecryptionKMSURI = append(newOpts.DecryptionKMSURI, tree.NewDString(redactedURI.String()))
 	}
 
 	return newOpts, nil
@@ -1133,10 +1130,10 @@ func resolveOptionsForRestoreJobDescription(
 func restoreJobDescription(
 	p sql.PlanHookState,
 	restore *tree.Restore,
-	from [][]string,
+	from [][]*url.URL,
 	opts tree.RestoreOptions,
 	intoDB string,
-	kmsURIs []string,
+	kmsURIs []*url.URL,
 ) (string, error) {
 	r := &tree.Restore{
 		DescriptorCoverage: restore.DescriptorCoverage,
@@ -1155,11 +1152,8 @@ func restoreJobDescription(
 	for i, backup := range from {
 		r.From[i] = make(tree.StringOrPlaceholderOptList, len(backup))
 		for j, uri := range backup {
-			sf, err := cloudimpl.SanitizeExternalStorageURI(uri, nil /* extraParams */)
-			if err != nil {
-				return "", err
-			}
-			r.From[i][j] = tree.NewDString(sf)
+			sf := cloudimpl.SanitizeExternalStorageURI(uri, nil /* extraParams */)
+			r.From[i][j] = tree.NewDString(sf.String())
 		}
 	}
 
@@ -1236,24 +1230,27 @@ func restorePlanHook(
 			return err
 		}
 
-		from := make([][]string, len(fromFns))
+		from := make([][]*url.URL, len(fromFns))
 		for i := range fromFns {
-			from[i], err = fromFns[i]()
+			f, err := fromFns[i]()
 			if err != nil {
 				return err
 			}
+
+			uris, err := stringsToURLs(f)
+			if err != nil {
+				return err
+			}
+
+			from[i] = uris
 		}
 		if subdir != "" {
 			if len(from) != 1 {
 				return errors.Errorf("RESTORE FROM ... IN can only by used against a single collection path (per-locality)")
 			}
-			for i := range from[0] {
-				parsed, err := url.Parse(from[0][i])
-				if err != nil {
-					return err
-				}
-				parsed.Path = path.Join(parsed.Path, subdir)
-				from[0][i] = parsed.String()
+			for i, uri := range from[0] {
+				uri.Path = path.Join(uri.Path, subdir)
+				from[0][i] = uri
 			}
 		}
 
@@ -1278,12 +1275,15 @@ func restorePlanHook(
 			}
 		}
 
-		var kms []string
+		var kms []*url.URL
 		if kmsFn != nil {
-			kms, err = kmsFn()
+			f, err := kmsFn()
 			if err != nil {
 				return err
 			}
+
+			k, err := stringsToURLs(f)
+			kms = k
 		}
 
 		var intoDB string
@@ -1304,7 +1304,7 @@ func restorePlanHook(
 }
 
 func checkPrivilegesForRestore(
-	ctx context.Context, restoreStmt *tree.Restore, p sql.PlanHookState, from [][]string,
+	ctx context.Context, restoreStmt *tree.Restore, p sql.PlanHookState, from [][]*url.URL,
 ) error {
 	hasAdmin, err := p.HasAdminRole(ctx)
 	if err != nil {
@@ -1364,9 +1364,9 @@ func doRestorePlan(
 	ctx context.Context,
 	restoreStmt *tree.Restore,
 	p sql.PlanHookState,
-	from [][]string,
+	from [][]*url.URL,
 	passphrase string,
-	kms []string,
+	kms []*url.URL,
 	intoDB string,
 	endTime hlc.Timestamp,
 	resultsCh chan<- tree.Datums,
@@ -1583,7 +1583,7 @@ func doRestorePlan(
 		Details: jobspb.RestoreDetails{
 			EndTime:            endTime,
 			DescriptorRewrites: descriptorRewrites,
-			URIs:               defaultURIs,
+			URIs:               urlsToStrings(defaultURIs),
 			BackupLocalityInfo: localityInfo,
 			TableDescs:         encodedTables,
 			Tenants:            tenants,

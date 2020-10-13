@@ -71,7 +71,7 @@ func changefeedPlanHook(
 		return nil, nil, nil, false, nil
 	}
 
-	var sinkURIFn func() (string, error)
+	var sinkFn func() (string, error)
 	var header colinfo.ResultColumns
 	unspecifiedSink := changefeedStmt.SinkURI == nil
 	avoidBuffering := false
@@ -83,7 +83,7 @@ func changefeedPlanHook(
 		// over pgwire. The types of these rows are `(topic STRING, key BYTES,
 		// value BYTES)` and they correspond exactly to what would be emitted to
 		// a sink.
-		sinkURIFn = func() (string, error) { return ``, nil }
+		sinkFn = func() (string, error) { return ``, nil }
 		header = colinfo.ResultColumns{
 			{Name: "table", Typ: types.String},
 			{Name: "key", Typ: types.Bytes},
@@ -92,7 +92,7 @@ func changefeedPlanHook(
 		avoidBuffering = true
 	} else {
 		var err error
-		sinkURIFn, err = p.TypeAsString(ctx, changefeedStmt.SinkURI, `CREATE CHANGEFEED`)
+		sinkFn, err = p.TypeAsString(ctx, changefeedStmt.SinkURI, `CREATE CHANGEFEED`)
 		if err != nil {
 			return nil, nil, nil, false, err
 		}
@@ -118,14 +118,19 @@ func changefeedPlanHook(
 			return pgerror.New(pgcode.InsufficientPrivilege, "permission denied to create changefeed")
 		}
 
-		sinkURI, err := sinkURIFn()
+		sink, err := sinkFn()
 		if err != nil {
 			return err
 		}
-		if !unspecifiedSink && sinkURI == `` {
+		if !unspecifiedSink && sink == `` {
 			// Error if someone specifies an INTO with the empty string. We've
 			// already sent the wrong result column headers.
 			return errors.New(`omit the SINK clause for inline results`)
+		}
+
+		sinkURI, err := url.Parse(sink)
+		if err != nil {
+			return err
 		}
 
 		opts, err := optsFn()
@@ -194,7 +199,7 @@ func changefeedPlanHook(
 		details := jobspb.ChangefeedDetails{
 			Targets:       targets,
 			Opts:          opts,
-			SinkURI:       sinkURI,
+			SinkURI:       sink,
 			StatementTime: statementTime,
 		}
 		progress := jobspb.Progress{
@@ -229,7 +234,7 @@ func changefeedPlanHook(
 		// The only upside in all this nonsense is the tests are decent. I've tuned
 		// this particular order simply by rearranging stuff until the changefeedccl
 		// tests all pass.
-		parsedSink, err := url.Parse(sinkURI)
+		parsedSink, err := url.Parse(sink)
 		if err != nil {
 			return err
 		}
@@ -392,15 +397,13 @@ func changefeedPlanHook(
 }
 
 func changefeedJobDescription(
-	p sql.PlanHookState, changefeed *tree.CreateChangefeed, sinkURI string, opts map[string]string,
+	p sql.PlanHookState, changefeed *tree.CreateChangefeed, sinkURI *url.URL, opts map[string]string,
 ) (string, error) {
-	cleanedSinkURI, err := cloudimpl.SanitizeExternalStorageURI(sinkURI, []string{changefeedbase.SinkParamSASLPassword})
-	if err != nil {
-		return "", err
-	}
+	cleanedSinkURI := cloudimpl.SanitizeExternalStorageURI(sinkURI, []string{changefeedbase.SinkParamSASLPassword})
+
 	c := &tree.CreateChangefeed{
 		Targets: changefeed.Targets,
-		SinkURI: tree.NewDString(cleanedSinkURI),
+		SinkURI: tree.NewDString(cleanedSinkURI.String()),
 	}
 	for k, v := range opts {
 		opt := tree.KVOption{Key: tree.Name(k)}

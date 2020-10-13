@@ -410,7 +410,13 @@ func (b *backupResumer) Resume(
 
 	// For all backups, partitioned or not, the main BACKUP manifest is stored at
 	// details.URI.
-	defaultConf, err := cloudimpl.ExternalStorageConfFromURI(details.URI, p.User())
+
+	detailsURI, err := url.Parse(details.URI)
+	if err != nil {
+		return err
+	}
+
+	defaultConf, err := cloudimpl.ExternalStorageConfFromURI(detailsURI, p.User())
 	if err != nil {
 		return errors.Wrapf(err, "export configuration")
 	}
@@ -422,7 +428,8 @@ func (b *backupResumer) Resume(
 
 	// EncryptionInfo is non-nil only when new encryption information has been
 	// generated during BACKUP planning.
-	redactedURI := RedactURIForErrorMessage(details.URI)
+
+	redactedURI := RedactURIForErrorMessage(detailsURI)
 	if details.EncryptionInfo != nil {
 		if err := writeEncryptionInfoIfNotExists(ctx, details.EncryptionInfo,
 			defaultStore); err != nil {
@@ -459,7 +466,12 @@ func (b *backupResumer) Resume(
 	}
 
 	storageByLocalityKV := make(map[string]*roachpb.ExternalStorage)
-	for kv, uri := range details.URIsByLocalityKV {
+	for kv, s := range details.URIsByLocalityKV {
+		uri, err := url.Parse(s)
+		if err != nil {
+			return err
+		}
+
 		conf, err := cloudimpl.ExternalStorageConfFromURI(uri, p.User())
 		if err != nil {
 			return err
@@ -547,7 +559,7 @@ func (b *backupResumer) Resume(
 
 		suffix := strings.TrimPrefix(path.Clean(backupURI.Path), path.Clean(collectionURI.Path))
 
-		c, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, details.CollectionURI, p.User())
+		c, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, collectionURI, p.User())
 		if err != nil {
 			return err
 		}
@@ -683,9 +695,15 @@ func (b *backupResumer) deleteCheckpoint(
 	// Attempt to delete BACKUP-CHECKPOINT.
 	if err := func() error {
 		details := b.job.Details().(jobspb.BackupDetails)
+
 		// For all backups, partitioned or not, the main BACKUP manifest is stored at
 		// details.URI.
-		exportStore, err := cfg.DistSQLSrv.ExternalStorageFromURI(ctx, details.URI, user)
+		detailsURI, err := url.Parse(details.URI)
+		if err != nil {
+			return err
+		}
+
+		exportStore, err := cfg.DistSQLSrv.ExternalStorageFromURI(ctx, detailsURI, user)
 		if err != nil {
 			return err
 		}

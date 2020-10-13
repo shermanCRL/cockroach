@@ -56,9 +56,9 @@ func (n *noopReadSeeker) Seek(int64, int) (int64, error) {
 	return 0, errors.New("illegal seek")
 }
 
-func checkIfFileExists(ctx context.Context, c *copyMachine, dest, copyTargetTable string) error {
+func checkIfFileExists(ctx context.Context, c *copyMachine, dest *url.URL, copyTargetTable string) error {
 	if copyTargetTable == UserFileUploadTable {
-		dest = strings.TrimSuffix(dest, ".tmp")
+		dest.Path = strings.TrimSuffix(dest.Path, ".tmp")
 	}
 	store, err := c.p.execCfg.DistSQLSrv.ExternalStorageFromURI(ctx, dest, c.p.User())
 	if err != nil {
@@ -68,10 +68,7 @@ func checkIfFileExists(ctx context.Context, c *copyMachine, dest, copyTargetTabl
 
 	_, err = store.ReadFile(ctx, "")
 	if err == nil {
-		// Can ignore this parse error as it would have been caught when creating a
-		// new ExternalStorage above and so we never expect it to non-nil.
-		uri, _ := url.Parse(dest)
-		return errors.Newf("destination file already exists for %s", uri.Path)
+		return errors.Newf("destination file already exists for %s", dest.Path)
 	}
 
 	return nil
@@ -122,14 +119,18 @@ func newFileUploadMachine(
 	if err != nil {
 		return nil, err
 	}
-
-	pr, pw := io.Pipe()
-	store, err := c.p.execCfg.DistSQLSrv.ExternalStorageFromURI(ctx, dest, c.p.User())
+	destURI, err := url.Parse(dest)
 	if err != nil {
 		return nil, err
 	}
 
-	err = checkIfFileExists(ctx, c, dest, n.Table.Table())
+	pr, pw := io.Pipe()
+	store, err := c.p.execCfg.DistSQLSrv.ExternalStorageFromURI(ctx, destURI, c.p.User())
+	if err != nil {
+		return nil, err
+	}
+
+	err = checkIfFileExists(ctx, c, destURI, n.Table.Table())
 	if err != nil {
 		return nil, err
 	}

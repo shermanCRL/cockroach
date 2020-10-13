@@ -102,20 +102,25 @@ func showBackupPlanHook(
 			return err
 		}
 
+		strURI, err := url.Parse(str)
+		if err != nil {
+			return err
+		}
+
 		if inColFn != nil {
 			collection, err := inColFn()
 			if err != nil {
 				return err
 			}
-			parsed, err := url.Parse(collection)
+			collectionURI, err := url.Parse(collection)
 			if err != nil {
 				return err
 			}
-			parsed.Path = path.Join(parsed.Path, str)
-			str = parsed.String()
+			collectionURI.Path = path.Join(collectionURI.Path, str)
+			strURI = collectionURI
 		}
 
-		store, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, str, p.User())
+		store, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, strURI, p.User())
 		if err != nil {
 			return errors.Wrapf(err, "make storage")
 		}
@@ -136,8 +141,13 @@ func showBackupPlanHook(
 				return err
 			}
 
+			kmsURI, err := url.Parse(kms)
+			if err != nil {
+				return err
+			}
+
 			env := &backupKMSEnv{p.ExecCfg().Settings, &p.ExecCfg().ExternalIODirConfig}
-			defaultKMSInfo, err := validateKMSURIsAgainstFullBackup([]string{kms},
+			defaultKMSInfo, err := validateKMSURIsAgainstFullBackup([]*url.URL{kmsURI},
 				newEncryptedDataKeyMapFromProtoMap(opts.EncryptedDataKeyByKMSMasterKeyID), env)
 			if err != nil {
 				return err
@@ -493,7 +503,12 @@ func showBackupsInCollectionPlanHook(
 			return err
 		}
 
-		store, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, collection, p.User())
+		collectionURI, err := url.Parse(collection)
+		if err != nil {
+			return err
+		}
+
+		store, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, collectionURI, p.User())
 		if err != nil {
 			return errors.Wrapf(err, "connect to external storage")
 		}

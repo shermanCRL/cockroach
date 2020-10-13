@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net/url"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/storageccl"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -190,7 +191,12 @@ func makeImportSpans(
 		var storesByLocalityKV map[string]roachpb.ExternalStorage
 		if backupLocalityInfo != nil && backupLocalityInfo[i].URIsByOriginalLocalityKV != nil {
 			storesByLocalityKV = make(map[string]roachpb.ExternalStorage)
-			for kv, uri := range backupLocalityInfo[i].URIsByOriginalLocalityKV {
+			for kv, s := range backupLocalityInfo[i].URIsByOriginalLocalityKV {
+				uri, err := url.Parse(s)
+				if err != nil {
+					return nil, hlc.Timestamp{}, err
+				}
+
 				conf, err := cloudimpl.ExternalStorageConfFromURI(uri, user)
 				if err != nil {
 					return nil, hlc.Timestamp{}, err
@@ -656,7 +662,12 @@ func loadBackupSQLDescs(
 	details jobspb.RestoreDetails,
 	encryption *jobspb.BackupEncryptionOptions,
 ) ([]BackupManifest, BackupManifest, []catalog.Descriptor, error) {
-	backupManifests, err := loadBackupManifests(ctx, details.URIs,
+	detailsURIs, err := stringsToURLs(details.URIs)
+	if err != nil {
+		return nil, BackupManifest{}, nil, err
+	}
+
+	backupManifests, err := loadBackupManifests(ctx, detailsURIs,
 		p.User(), p.ExecCfg().DistSQLSrv.ExternalStorageFromURI, encryption)
 	if err != nil {
 		return nil, BackupManifest{}, nil, err
@@ -1084,7 +1095,12 @@ func (r *restoreResumer) Resume(
 	if err != nil {
 		return err
 	}
-	defaultConf, err := cloudimpl.ExternalStorageConfFromURI(details.URIs[lastBackupIndex], p.User())
+
+	detailsURI, err := url.Parse(details.URIs[lastBackupIndex])
+	if err != nil {
+		return err
+	}
+	defaultConf, err := cloudimpl.ExternalStorageConfFromURI(detailsURI, p.User())
 	if err != nil {
 		return errors.Wrapf(err, "creating external store configuration")
 	}

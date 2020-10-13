@@ -175,7 +175,7 @@ func TestS3BucketDoesNotExist(t *testing.T) {
 	}
 
 	bucket := "invalid-bucket"
-	u := url.URL{
+	u := &url.URL{
 		Scheme:   "s3",
 		Host:     bucket,
 		Path:     "backup-test",
@@ -185,7 +185,7 @@ func TestS3BucketDoesNotExist(t *testing.T) {
 	ctx := context.Background()
 	user := security.RootUser
 
-	conf, err := cloudimpl.ExternalStorageConfFromURI(u.String(), user)
+	conf, err := cloudimpl.ExternalStorageConfFromURI(u, user)
 	if err != nil {
 		t.Fatal(err)
 	}

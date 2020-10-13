@@ -185,7 +185,7 @@ func importJobDescription(
 	p sql.PlanHookState,
 	orig *tree.Import,
 	defs tree.TableDefs,
-	files []string,
+	files []*url.URL,
 	opts map[string]string,
 ) (string, error) {
 	stmt := *orig
@@ -193,11 +193,8 @@ func importJobDescription(
 	stmt.CreateDefs = defs
 	stmt.Files = nil
 	for _, file := range files {
-		clean, err := cloudimpl.SanitizeExternalStorageURI(file, nil /* extraParams */)
-		if err != nil {
-			return "", err
-		}
-		stmt.Files = append(stmt.Files, tree.NewDString(clean))
+		clean := cloudimpl.SanitizeExternalStorageURI(file, nil /* extraParams */)
+		stmt.Files = append(stmt.Files, tree.NewDString(clean.String()))
 	}
 	stmt.Options = nil
 	for k, v := range opts {
@@ -296,13 +293,20 @@ func importPlanHook(
 			return err
 		}
 
-		// Certain ExternalStorage URIs require super-user access. Check all the
-		// URIs passed to the IMPORT command.
+		var filenamePatternURIs []*url.URL
+
 		for _, file := range filenamePatterns {
-			hasExplicitAuth, uriScheme, err := cloudimpl.AccessIsWithExplicitAuth(file)
+			filenamePatternURI, err := url.Parse(file)
 			if err != nil {
 				return err
 			}
+			filenamePatternURIs = append(filenamePatternURIs, filenamePatternURI)
+		}
+
+		// Certain ExternalStorage URIs require super-user access. Check all the
+		// URIs passed to the IMPORT command.
+		for _, fileURI := range filenamePatternURIs {
+			hasExplicitAuth, uriScheme := cloudimpl.AccessIsWithExplicitAuth(fileURI)
 			if !hasExplicitAuth {
 				err := p.RequireAdminRole(ctx,
 					fmt.Sprintf("IMPORT from the specified %s URI", uriScheme))
@@ -312,13 +316,13 @@ func importPlanHook(
 			}
 		}
 
-		var files []string
+		var fileURIs []*url.URL
 		if _, ok := opts[importOptionDisableGlobMatch]; ok {
-			files = filenamePatterns
+			fileURIs = filenamePatternURIs
 		} else {
-			for _, file := range filenamePatterns {
-				if cloudimpl.URINeedsGlobExpansion(file) {
-					s, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, file, p.User())
+			for _, fileURI := range filenamePatternURIs {
+				if cloudimpl.URINeedsGlobExpansion(fileURI) {
+					s, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, fileURI, p.User())
 					if err != nil {
 						return err
 					}
@@ -327,18 +331,24 @@ func importPlanHook(
 						return err
 					}
 					if len(expandedFiles) < 1 {
-						return errors.Errorf(`no files matched uri provided: '%s'`, file)
+						return errors.Errorf(`no files matched uri provided: '%s'`, fileURI.String())
 					}
-					files = append(files, expandedFiles...)
+					for _, expandedFile := range expandedFiles {
+						expandedFileURI, err := url.Parse(expandedFile)
+						if err != nil {
+							return err
+						}
+						fileURIs = append(fileURIs, expandedFileURI)
+					}
 				} else {
-					files = append(files, file)
+					fileURIs = append(fileURIs, fileURI)
 				}
 			}
 		}
 
 		// Typically the SQL grammar means it is only possible to specifying exactly
 		// one pgdump/mysqldump URI, but glob-expansion could have changed that.
-		if importStmt.Bundle && len(files) != 1 {
+		if importStmt.Bundle && len(fileURIs) != 1 {
 			return pgerror.New(pgcode.FeatureNotSupported, "SQL dump files must be imported individually")
 		}
 
@@ -610,7 +620,7 @@ func importPlanHook(
 
 		var tableDetails []jobspb.ImportDetails_Table
 		var tableDescs []*tabledesc.Mutable // parallel with tableDetails
-		jobDesc, err := importJobDescription(p, importStmt, nil, filenamePatterns, opts)
+		jobDesc, err := importJobDescription(p, importStmt, nil, filenamePatternURIs, opts)
 		if err != nil {
 			return err
 		}
@@ -689,7 +699,7 @@ func importPlanHook(
 			seqVals := make(map[descpb.ID]int64)
 
 			if importStmt.Bundle {
-				store, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, files[0], p.User())
+				store, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, fileURIs[0], p.User())
 				if err != nil {
 					return err
 				}
@@ -700,7 +710,7 @@ func importPlanHook(
 					return err
 				}
 				defer raw.Close()
-				reader, err := decompressingReader(raw, files[0], format.Compression)
+				reader, err := decompressingReader(raw, fileURIs[0].String(), format.Compression)
 				if err != nil {
 					return err
 				}
@@ -743,7 +753,12 @@ func importPlanHook(
 					if err != nil {
 						return err
 					}
-					create, err = readCreateTableFromStore(ctx, filename,
+					filenameURI, err := url.Parse(filename)
+					if err != nil {
+						return err
+					}
+
+					create, err = readCreateTableFromStore(ctx, filenameURI,
 						p.ExecCfg().DistSQLSrv.ExternalStorageFromURI, p.User())
 					if err != nil {
 						return err
@@ -762,7 +777,7 @@ func importPlanHook(
 					return err
 				}
 				tableDescs = []*tabledesc.Mutable{tbl}
-				descStr, err := importJobDescription(p, importStmt, create.Defs, filenamePatterns, opts)
+				descStr, err := importJobDescription(p, importStmt, create.Defs, filenamePatternURIs, opts)
 				if err != nil {
 					return err
 				}
@@ -797,19 +812,18 @@ func importPlanHook(
 			}
 		}
 
-		telemetry.CountBucketed("import.files", int64(len(files)))
+		telemetry.CountBucketed("import.files", int64(len(fileURIs)))
 
 		// Record telemetry for userfile being used as the import target.
-		for _, file := range files {
-			uri, err := url.Parse(file)
+		for _, fileURI := range fileURIs {
 			// This should never be true as we have parsed these file names in an
 			// earlier step of import.
 			if err != nil {
-				log.Warningf(ctx, "failed to collect file specific import telemetry for %s", uri)
+				log.Warningf(ctx, "failed to collect file specific import telemetry for %s", fileURI)
 				continue
 			}
 
-			if uri.Scheme == "userfile" {
+			if fileURI.Scheme == "userfile" {
 				telemetry.Count("import.storage.userfile")
 				break
 			}
@@ -821,6 +835,11 @@ func importPlanHook(
 		// create the job in the user's transaction here and then in a post-commit
 		// hook we should kick of the StartableJob which we attached to the
 		// connExecutor somehow.
+
+		var files []string
+		for _, fileURI := range fileURIs {
+			files = append(files, fileURI.String())
+		}
 
 		importDetails := jobspb.ImportDetails{
 			URIs:       files,
@@ -926,10 +945,15 @@ func parseAvroOptions(
 
 		if len(format.Avro.SchemaJSON) == 0 {
 			// Inline schema not set; We must have external schema.
-			uri, ok := opts[avroSchemaURI]
+			uriString, ok := opts[avroSchemaURI]
 			if !ok {
 				return errors.Errorf(
 					"either %s or %s option must be set when importing avro record files", avroSchema, avroSchemaURI)
+			}
+
+			uri, err := url.Parse(uriString)
+			if err != nil {
+				return err
 			}
 
 			store, err := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI(ctx, uri, p.User())

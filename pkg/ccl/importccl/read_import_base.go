@@ -144,7 +144,7 @@ type readFileFunc func(context.Context, *fileReader, int32, int64, chan string) 
 // reported only after each file has been read.
 func readInputFiles(
 	ctx context.Context,
-	dataFiles map[int32]string,
+	dataFiles map[int32]*url.URL,
 	resumePos map[int32]int64,
 	format roachpb.IOFileFormat,
 	fileFunc readFileFunc,

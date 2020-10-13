@@ -594,7 +594,10 @@ func TestBackupRestoreAppend(t *testing.T) {
 			// Find the backup times in the collection and try RESTORE'ing to each, and
 			// within each also check if we can restore to individual times captured with
 			// incremental backups that were appended to that backup.
-			store, err := cloudimpl.ExternalStorageFromURI(ctx, "userfile:///0",
+			userfile, err := url.Parse("userfile:///0")
+			require.NoError(t, err)
+
+			store, err := cloudimpl.ExternalStorageFromURI(ctx, userfile,
 				base.ExternalIODirConfig{},
 				tc.Servers[0].ClusterSettings(),
 				blobs.TestEmptyBlobClientFactory, "root",
@@ -4304,54 +4307,43 @@ func (e *testKMSEnv) KMSConfig() *base.ExternalIODirConfig {
 }
 
 type testKMS struct {
-	uri string
+	uri *url.URL
 }
 
 var _ cloud.KMS = &testKMS{}
 
 func (k *testKMS) MasterKeyID() (string, error) {
-	kmsURL, err := url.ParseRequestURI(k.uri)
-	if err != nil {
-		return "", err
-	}
-
-	return strings.TrimPrefix(kmsURL.Path, "/"), nil
+	return strings.TrimPrefix(k.uri.Path, "/"), nil
 }
 
 // Encrypt appends the KMS URI master key ID to data.
 func (k *testKMS) Encrypt(ctx context.Context, data []byte) ([]byte, error) {
-	kmsURL, err := url.ParseRequestURI(k.uri)
-	if err != nil {
-		return nil, err
-	}
-	return []byte(string(data) + strings.TrimPrefix(kmsURL.Path, "/")), nil
+	return []byte(string(data) + strings.TrimPrefix(k.uri.Path, "/")), nil
 }
 
 // Decrypt strips the KMS URI master key ID from data.
 func (k *testKMS) Decrypt(ctx context.Context, data []byte) ([]byte, error) {
-	kmsURL, err := url.ParseRequestURI(k.uri)
-	if err != nil {
-		return nil, err
-	}
-	return []byte(strings.TrimSuffix(string(data), strings.TrimPrefix(kmsURL.Path, "/"))), nil
+	return []byte(strings.TrimSuffix(string(data), strings.TrimPrefix(k.uri.Path, "/"))), nil
 }
 
 func (k *testKMS) Close() error {
 	return nil
 }
 
-func MakeTestKMS(uri string, _ cloud.KMSEnv) (cloud.KMS, error) {
+func MakeTestKMS(uri *url.URL, _ cloud.KMSEnv) (cloud.KMS, error) {
 	return &testKMS{uri}, nil
 }
 
-func constructMockKMSURIsWithKeyID(keyIDs []string) []string {
+func constructMockKMSURIsWithKeyID(keyIDs []string) []*url.URL {
 	q := make(url.Values)
 	q.Add(cloudimpl.AuthParam, cloudimpl.AuthParamImplicit)
 	q.Add(cloudimpl.KMSRegionParam, "blah")
 
-	var uris []string
+	var uris []*url.URL
 	for _, keyID := range keyIDs {
-		uris = append(uris, fmt.Sprintf("testkms:///%s?%s", keyID, q.Encode()))
+		s := fmt.Sprintf("testkms:///%s?%s", keyID, q.Encode())
+		uri, _ := url.Parse(s)
+		uris = append(uris, uri)
 	}
 
 	return uris
@@ -4366,8 +4358,8 @@ func TestValidateKMSURIsAgainstFullBackup(t *testing.T) {
 
 	for _, tc := range []struct {
 		name                  string
-		fullBackupURIs        []string
-		incrementalBackupURIs []string
+		fullBackupURIs        []*url.URL
+		incrementalBackupURIs []*url.URL
 		expectError           bool
 	}{
 		{
@@ -4399,9 +4391,7 @@ func TestValidateKMSURIsAgainstFullBackup(t *testing.T) {
 
 		var defaultEncryptedDataKey []byte
 		for _, uri := range tc.fullBackupURIs {
-			url, err := url.ParseRequestURI(uri)
-			require.NoError(t, err)
-			keyID := strings.TrimPrefix(url.Path, "/")
+			keyID := strings.TrimPrefix(uri.Path, "/")
 
 			masterKeyIDToDataKey.addEncryptedDataKey(plaintextMasterKeyID(keyID),
 				[]byte("efgh-"+tc.name))
@@ -4437,7 +4427,7 @@ func TestGetEncryptedDataKeyByKMSMasterKeyID(t *testing.T) {
 	plaintextDataKey := []byte("supersecret")
 	for _, tc := range []struct {
 		name           string
-		fullBackupURIs []string
+		fullBackupURIs []*url.URL
 	}{
 		{
 			name:           "single-uri",
@@ -4462,7 +4452,7 @@ func TestGetEncryptedDataKeyByKMSMasterKeyID(t *testing.T) {
 
 			if defaultKMSInfo == nil {
 				defaultKMSInfo = &jobspb.BackupEncryptionOptions_KMSInfo{
-					Uri:              uri,
+					Uri:              uri.String(),
 					EncryptedDataKey: encryptedDataKey,
 				}
 			}

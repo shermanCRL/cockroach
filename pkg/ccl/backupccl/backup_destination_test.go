@@ -36,7 +36,7 @@ func newTestStorageFactory(t *testing.T) (cloud.ExternalStorageFromURIFactory, f
 	settings := cluster.MakeTestingClusterSettings()
 	settings.ExternalIODir = dir
 	clientFactory := blobs.TestBlobServiceClient(settings.ExternalIODir)
-	externalStorageFromURI := func(ctx context.Context, uri, user string) (cloud.ExternalStorage,
+	externalStorageFromURI := func(ctx context.Context, uri *url.URL, user string) (cloud.ExternalStorage,
 		error) {
 		conf, err := cloudimpl.ExternalStorageConfFromURI(uri, user)
 		require.NoError(t, err)
@@ -59,7 +59,7 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 	defer cleanup()
 
 	// writeManifest writes an empty backup manifest file to the given URI.
-	writeManifest := func(t *testing.T, uri string) {
+	writeManifest := func(t *testing.T, uri *url.URL) {
 		storage, err := externalStorageFromURI(ctx, uri, security.RootUser)
 		defer storage.Close()
 		require.NoError(t, err)
@@ -68,7 +68,7 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 
 	// writeLatest writes latestBackupSuffix to the LATEST file in the given
 	// collection.
-	writeLatest := func(t *testing.T, collectionURI, latestBackupSuffix string) {
+	writeLatest := func(t *testing.T, collectionURI *url.URL, latestBackupSuffix string) {
 		storage, err := externalStorageFromURI(ctx, collectionURI, security.RootUser)
 		defer storage.Close()
 		require.NoError(t, err)
@@ -81,22 +81,21 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 	// `localities`. The path for each locality will be augmented with the
 	// locality to ensure that each locality references a different directory and
 	// the appropriate COCKROACH_LOCALITY argument will be added to the URI.
-	localizeURI := func(t *testing.T, baseURI string, localities []string) []string {
+	localizeURI := func(t *testing.T, baseURI *url.URL, localities []string) []*url.URL {
 		if localities == nil {
-			return []string{baseURI}
+			return []*url.URL{baseURI}
 		}
 		allLocalities := append([]string{defaultLocalityValue}, localities...)
-		localizedURIs := make([]string, len(allLocalities))
+		localizedURIs := make([]*url.URL, len(allLocalities))
 		for i, locality := range allLocalities {
-			parsedURI, err := url.Parse(baseURI)
-			require.NoError(t, err)
+			localizedURI := cloneURL(baseURI)
 			if locality != defaultLocalityValue {
-				parsedURI.Path = path.Join(parsedURI.Path, locality)
+				localizedURI.Path = path.Join(localizedURI.Path, locality)
 			}
-			q := parsedURI.Query()
+			q := localizedURI.Query()
 			q.Add(localityURLParam, locality)
-			parsedURI.RawQuery = q.Encode()
-			localizedURIs[i] = parsedURI.String()
+			localizedURI.RawQuery = q.Encode()
+			localizedURIs[i] = localizedURI
 		}
 
 		return localizedURIs
@@ -119,16 +118,16 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 			// We write backup manifests as we test as if we were actually running the
 			// backup.
 			t.Run("explicit", func(t *testing.T) {
-				fullLoc := fmt.Sprintf("nodelocal://1/%s?AUTH=implicit", t.Name())
-				inc1Loc := fmt.Sprintf("nodelocal://1/%s/inc1?AUTH=implicit", t.Name())
-				inc2Loc := fmt.Sprintf("nodelocal://1/%s/inc2?AUTH=implicit", t.Name())
+				fullLoc, _ := url.Parse(fmt.Sprintf("nodelocal://1/%s?AUTH=implicit", t.Name()))
+				inc1Loc, _ := url.Parse(fmt.Sprintf("nodelocal://1/%s/inc1?AUTH=implicit", t.Name()))
+				inc2Loc, _ := url.Parse(fmt.Sprintf("nodelocal://1/%s/inc2?AUTH=implicit", t.Name()))
 
-				testExplicitBackup := func(t *testing.T, to []string, incrementalFrom []string) {
+				testExplicitBackup := func(t *testing.T, to []*url.URL, incrementalFrom []*url.URL) {
 					// Time doesn't matter for these since we don't create any date-based
 					// subdirectory. Let's just use now.
 					endTime := hlc.Timestamp{WallTime: timeutil.Now().UnixNano()}
 
-					expectedPrevBackups := make([]string, len(incrementalFrom))
+					expectedPrevBackups := make([]*url.URL, len(incrementalFrom))
 					for i, incrementalLoc := range incrementalFrom {
 						expectedPrevBackups[i] = localizeURI(t, incrementalLoc, localities)[0]
 					}
@@ -155,7 +154,7 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 
 				// The first initial full backup: BACKUP TO full.
 				{
-					incrementalFrom := []string(nil)
+					incrementalFrom := []*url.URL(nil)
 					to := localizeURI(t, fullLoc, localities)
 					testExplicitBackup(t, to, incrementalFrom)
 
@@ -165,7 +164,7 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 
 				// An incremental on top if it: BACKUP TO inc1 INCREMENTAL FROM full.
 				{
-					incrementalFrom := []string{fullLoc}
+					incrementalFrom := []*url.URL{fullLoc}
 					to := localizeURI(t, inc1Loc, localities)
 					testExplicitBackup(t, to, incrementalFrom)
 
@@ -176,7 +175,7 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 				// Another incremental on top of the incremental: BACKUP TO inc2
 				// INCREMENTAL FROM full, inc1.
 				{
-					incrementalFrom := []string{fullLoc, inc1Loc}
+					incrementalFrom := []*url.URL{fullLoc, inc1Loc}
 					to := localizeURI(t, inc2Loc, localities)
 					testExplicitBackup(t, to, incrementalFrom)
 
@@ -191,14 +190,15 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 			// - BACKUP TO full
 			// - BACKUP TO full
 			t.Run("auto-append", func(t *testing.T) {
-				baseDir := fmt.Sprintf("nodelocal://1/%s?AUTH=implicit", t.Name())
+				baseDir, err := url.Parse(fmt.Sprintf("nodelocal://1/%s?AUTH=implicit", t.Name()))
+				require.NoError(t, err)
 				fullTime := time.Date(2020, 12, 25, 6, 0, 0, 0, time.UTC)
 				inc1Time := fullTime.Add(time.Minute * 30)
 				inc2Time := inc1Time.Add(time.Minute * 30)
-				prevBackups := []string(nil)
+				prevBackups := []*url.URL(nil)
 
-				testAutoAppendBackup := func(t *testing.T, to []string, backupTime time.Time,
-					expectedDefault string, expectedLocalities map[string]string, expectedPrevBackups []string,
+				testAutoAppendBackup := func(t *testing.T, to []*url.URL, backupTime time.Time,
+					expectedDefault *url.URL, expectedLocalities map[string]*url.URL, expectedPrevBackups []*url.URL,
 				) {
 					endTime := hlc.Timestamp{WallTime: backupTime.UnixNano()}
 
@@ -226,9 +226,11 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 					to := localizeURI(t, baseDir, localities)
 					// The full backup should go into the baseDir.
 					expectedDefault := baseDir
-					expectedLocalities := make(map[string]string)
+					expectedLocalities := make(map[string]*url.URL)
 					for _, locality := range localities {
-						expectedLocalities[locality] = fmt.Sprintf("nodelocal://1/%s/%s?AUTH=implicit", t.Name(), locality)
+						u, err := url.Parse(fmt.Sprintf("nodelocal://1/%s/%s?AUTH=implicit", t.Name(), locality))
+						require.NoError(t, err)
+						expectedLocalities[locality] = u
 					}
 
 					testAutoAppendBackup(t, to, fullTime, expectedDefault, expectedLocalities, prevBackups)

@@ -113,24 +113,22 @@ var ErrListingUnsupported = errors.New("listing is not supported")
 var ErrFileDoesNotExist = errors.New("external_storage: file doesn't exist")
 
 // ExternalStorageConfFromURI generates an ExternalStorage config from a URI string.
-func ExternalStorageConfFromURI(path, user string) (roachpb.ExternalStorage, error) {
+func ExternalStorageConfFromURI(uri *url.URL, user string) (roachpb.ExternalStorage, error) {
 	conf := roachpb.ExternalStorage{}
-	uri, err := url.Parse(path)
-	if err != nil {
-		return conf, err
-	}
+
 	switch uri.Scheme {
 	case "s3":
 		conf.Provider = roachpb.ExternalStorageProvider_S3
+		q := uri.Query()
 		conf.S3Config = &roachpb.ExternalStorage_S3{
 			Bucket:    uri.Host,
 			Prefix:    uri.Path,
-			AccessKey: uri.Query().Get(AWSAccessKeyParam),
-			Secret:    uri.Query().Get(AWSSecretParam),
-			TempToken: uri.Query().Get(AWSTempTokenParam),
-			Endpoint:  uri.Query().Get(AWSEndpointParam),
-			Region:    uri.Query().Get(S3RegionParam),
-			Auth:      uri.Query().Get(AuthParam),
+			AccessKey: q.Get(AWSAccessKeyParam),
+			Secret:    q.Get(AWSSecretParam),
+			TempToken: q.Get(AWSTempTokenParam),
+			Endpoint:  q.Get(AWSEndpointParam),
+			Region:    q.Get(S3RegionParam),
+			Auth:      q.Get(AuthParam),
 			/* NB: additions here should also update s3QueryParams() serializer */
 		}
 		conf.S3Config.Prefix = strings.TrimLeft(conf.S3Config.Prefix, "/")
@@ -144,22 +142,24 @@ func ExternalStorageConfFromURI(path, user string) (roachpb.ExternalStorage, err
 		conf.S3Config.Secret = strings.Replace(conf.S3Config.Secret, " ", "+", -1)
 	case "gs":
 		conf.Provider = roachpb.ExternalStorageProvider_GoogleCloud
+		q := uri.Query()
 		conf.GoogleCloudConfig = &roachpb.ExternalStorage_GCS{
 			Bucket:         uri.Host,
 			Prefix:         uri.Path,
-			Auth:           uri.Query().Get(AuthParam),
-			BillingProject: uri.Query().Get(GoogleBillingProjectParam),
-			Credentials:    uri.Query().Get(CredentialsParam),
+			Auth:           q.Get(AuthParam),
+			BillingProject: q.Get(GoogleBillingProjectParam),
+			Credentials:    q.Get(CredentialsParam),
 			/* NB: additions here should also update gcsQueryParams() serializer */
 		}
 		conf.GoogleCloudConfig.Prefix = strings.TrimLeft(conf.GoogleCloudConfig.Prefix, "/")
 	case "azure":
 		conf.Provider = roachpb.ExternalStorageProvider_Azure
+		q := uri.Query()
 		conf.AzureConfig = &roachpb.ExternalStorage_Azure{
 			Container:   uri.Host,
 			Prefix:      uri.Path,
-			AccountName: uri.Query().Get(AzureAccountNameParam),
-			AccountKey:  uri.Query().Get(AzureAccountKeyParam),
+			AccountName: q.Get(AzureAccountNameParam),
+			AccountKey:  q.Get(AzureAccountKeyParam),
 			/* NB: additions here should also update azureQueryParams() serializer */
 		}
 		if conf.AzureConfig.AccountName == "" {
@@ -171,13 +171,13 @@ func ExternalStorageConfFromURI(path, user string) (roachpb.ExternalStorage, err
 		conf.AzureConfig.Prefix = strings.TrimLeft(conf.AzureConfig.Prefix, "/")
 	case "http", "https":
 		conf.Provider = roachpb.ExternalStorageProvider_Http
-		conf.HttpPath.BaseUri = path
+		conf.HttpPath.BaseUri = uri.String()
 	case "nodelocal":
 		if uri.Host == "" {
 			return conf, errors.Errorf(
 				"host component of nodelocal URI must be a node ID ("+
 					"use 'self' to specify each node should access its own local filesystem): %s",
-				path,
+				uri.String(),
 			)
 		} else if uri.Host == "self" {
 			uri.Host = "0"
@@ -192,6 +192,7 @@ func ExternalStorageConfFromURI(path, user string) (roachpb.ExternalStorage, err
 		conf.LocalFile.NodeID = roachpb.NodeID(nodeID)
 	case "experimental-workload", "workload":
 		conf.Provider = roachpb.ExternalStorageProvider_Workload
+		var err error
 		if conf.WorkloadConfig, err = ParseWorkloadConfig(uri); err != nil {
 			return conf, err
 		}
@@ -222,7 +223,7 @@ func ExternalStorageConfFromURI(path, user string) (roachpb.ExternalStorage, err
 // ExternalStorageFromURI returns an ExternalStorage for the given URI.
 func ExternalStorageFromURI(
 	ctx context.Context,
-	uri string,
+	uri *url.URL,
 	externalConfig base.ExternalIODirConfig,
 	settings *cluster.Settings,
 	blobClientFactory blobs.BlobClientFactory,
@@ -237,6 +238,15 @@ func ExternalStorageFromURI(
 	return MakeExternalStorage(ctx, conf, externalConfig, settings, blobClientFactory, ie, kvDB)
 }
 
+func cloneURL(uri *url.URL) *url.URL {
+	// Same technique as https://github.com/golang/go/pull/35578/files#diff-6c2d018290e298803c0c9419d8739885R824-R837
+	clone := *uri
+	userClone := *uri.User
+	clone.User = &userClone
+
+	return &clone
+}
+
 // SanitizeExternalStorageURI returns the external storage URI with with some
 // secrets redacted, for use when showing these URIs in the UI, to provide some
 // protection from shoulder-surfing. The param is still present -- just
@@ -245,13 +255,9 @@ func ExternalStorageFromURI(
 // various clound-storage URIs supported by this package know about -- can be
 // passed allowing this function to be used to scrub other URIs too (such as
 // non-cloudstorage changefeed sinks).
-func SanitizeExternalStorageURI(path string, extraParams []string) (string, error) {
-	uri, err := url.Parse(path)
-	if err != nil {
-		return "", err
-	}
+func SanitizeExternalStorageURI(uri *url.URL, extraParams []string) *url.URL {
 	if uri.Scheme == "experimental-workload" || uri.Scheme == "workload" {
-		return path, nil
+		return uri
 	}
 
 	params := uri.Query()
@@ -267,8 +273,9 @@ func SanitizeExternalStorageURI(path string, extraParams []string) (string, erro
 		}
 	}
 
-	uri.RawQuery = params.Encode()
-	return uri.String(), nil
+	clone := cloneURL(uri)
+	clone.RawQuery = params.Encode()
+	return clone
 }
 
 // MakeExternalStorage creates an ExternalStorage from the given config.
@@ -312,20 +319,16 @@ func MakeExternalStorage(
 
 // URINeedsGlobExpansion checks if URI can be expanded by checking if it contains wildcard characters.
 // This should be used before passing a URI into ListFiles().
-func URINeedsGlobExpansion(uri string) bool {
-	parsedURI, err := url.Parse(uri)
-	if err != nil {
-		return false
-	}
+func URINeedsGlobExpansion(uri *url.URL) bool {
 	// We don't support listing files for workload and http.
 	unsupported := []string{"workload", "http", "https", "experimental-workload"}
 	for _, str := range unsupported {
-		if parsedURI.Scheme == str {
+		if uri.Scheme == str {
 			return false
 		}
 	}
 
-	return containsGlob(parsedURI.Path)
+	return containsGlob(uri.Path)
 }
 
 // AccessIsWithExplicitAuth checks if the provided ExternalStorage URI has
@@ -342,11 +345,7 @@ func URINeedsGlobExpansion(uri string) bool {
 //
 // - nodelocal: this is the node's shared filesystem and so only a super user
 // should be able to interact with it.
-func AccessIsWithExplicitAuth(path string) (bool, string, error) {
-	uri, err := url.Parse(path)
-	if err != nil {
-		return false, "", err
-	}
+func AccessIsWithExplicitAuth(uri *url.URL) (bool, string) {
 	hasExplicitAuth := false
 	switch uri.Scheme {
 	case "s3":
@@ -368,9 +367,9 @@ func AccessIsWithExplicitAuth(path string) (bool, string, error) {
 	case "experimental-workload", "workload", "userfile":
 		hasExplicitAuth = true
 	default:
-		return hasExplicitAuth, "", nil
+		return hasExplicitAuth, ""
 	}
-	return hasExplicitAuth, uri.Scheme, nil
+	return hasExplicitAuth, uri.Scheme
 }
 
 func containsGlob(str string) bool {
